@@ -16,7 +16,7 @@ Public API
         "status"               : "SUCCESS",
         "references"           : { "Amp_Channel-1": ..., ... },
         "maximum_attenuation"  : { "Att_Channel-1": ..., ... },
-        "minute_dataframe"     : <pd.DataFrame>,
+        "second_dataframe"     : <pd.DataFrame>,
         "attenuation_dataframe": <pd.DataFrame>,
     }
 
@@ -176,36 +176,35 @@ def report_max_attenuation(df: pd.DataFrame, verbose: bool = True) -> dict:
 
 
 # ==============================================================================
-# PER-MINUTE AGGREGATION & FILE EXPORT
+# PER-SECOND ATTENUATION FILE EXPORT
 # ==============================================================================
 
-def save_per_minute_file(
+def save_per_second_file(
     df: pd.DataFrame,
     file_path: str,
     output_dir: str = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """
-    Aggregates attenuation data to per-minute averages (HH:MM resolution)
-    and saves the result as a tab-delimited text file.
+    Saves attenuation at the original 1 Hz sampling rate (one row per sample).
+
+    No averaging or grouping is applied.  The output columns are:
+        Time          — HH:MM:SS
+        Att_Channel-1
+        Att_Channel-2
+        Att_Channel-3
+        Att_Channel-4
 
     If output_dir is provided the file is saved there; otherwise it is saved
     alongside the input file (legacy behaviour).
 
-    Returns the per-minute DataFrame so process_file() can include it in
+    Returns the per-second DataFrame so process_file() can include it in
     the result dictionary.
     """
     att_cols = [ch.replace("Amp_", "Att_") for ch in CHANNELS]
 
-    minute_df = df[att_cols].copy()
-    minute_df.insert(0, "Minute", df["Time"].dt.strftime("%H:%M"))
-
-    minute_df = (
-        minute_df
-        .groupby("Minute")
-        .mean()
-        .reset_index()
-    )
+    second_df = df[att_cols].copy()
+    second_df.insert(0, "Time", df["Time"].dt.strftime("%H:%M:%S"))
 
     if output_dir is not None:
         out_dir = Path(output_dir)
@@ -214,15 +213,15 @@ def save_per_minute_file(
     else:
         output_file = Path(file_path).parent / f"Attenuation_{Path(file_path).name}"
 
-    minute_df.to_csv(output_file, sep="\t", index=False, float_format="%.4f")
+    second_df.to_csv(output_file, sep="\t", index=False, float_format="%.4f")
 
     if verbose:
         print("\n" + "=" * 44)
-        print("Per-Minute Attenuation File Saved")
+        print("Per-Second Attenuation File Saved")
         print("=" * 44)
         print(f"  {output_file}")
 
-    return minute_df
+    return second_df
 
 
 # ==============================================================================
@@ -598,7 +597,7 @@ def process_file(
         "status"                : "SUCCESS"
         "references"            : dict  — channel → reference level (dB)
         "maximum_attenuation"   : dict  — channel → max attenuation (dB)
-        "minute_dataframe"      : pd.DataFrame — per-minute averaged attenuation
+        "second_dataframe"      : pd.DataFrame — per-second attenuation (1 Hz)
         "attenuation_dataframe" : pd.DataFrame — full-resolution attenuation data
     """
 
@@ -618,8 +617,8 @@ def process_file(
     # ── Attenuation columns ──────────────────────────────────────────────────
     df = compute_attenuation(df, references)
 
-    # ── Per-minute export — returns the aggregated DataFrame ─────────────────
-    minute_df = save_per_minute_file(df, file_path, output_dir=output_dir, verbose=verbose)
+    # ── Per-second export — returns the 1 Hz DataFrame ───────────────────────
+    second_df = save_per_second_file(df, file_path, output_dir=output_dir, verbose=verbose)
 
     # ── Max attenuation report — returns the per-channel dict ────────────────
     maximum_attenuation = report_max_attenuation(df, verbose=verbose)
@@ -642,6 +641,6 @@ def process_file(
         "status"                : "SUCCESS",
         "references"            : references,
         "maximum_attenuation"   : maximum_attenuation,
-        "minute_dataframe"      : minute_df,
+        "second_dataframe"      : second_df,
         "attenuation_dataframe" : df,
     }

@@ -49,6 +49,30 @@ def _date_label(folder_name: str) -> str:
     return folder_name
 
 
+def _is_rainy_folder(folder_name: str) -> bool:
+    """
+    Returns True if the folder name contains a rain-day suffix.
+
+    Recognised suffixes (case-insensitive):
+        R       e.g. "07012020 1Hz R"
+        L-R     e.g. "05012020 1Hz L-R"
+        VL-R    e.g. "18012020 1Hz VL-R"
+
+    Folders without a recognised suffix are treated as clear-sky and skipped.
+    """
+    name_upper = folder_name.upper()
+
+    # Check for recognised rain suffixes anywhere in the folder name.
+    # Use word-boundary logic: the suffix must appear as a distinct token
+    # (preceded by a space) so that plain date strings are not mis-matched.
+    for suffix in ("VL-R", "L-R", " R"):
+        if suffix in name_upper:
+            return True
+
+    return False
+
+
+
 def _render_display(
     month_name:    str,
     daily_folders: list,
@@ -127,22 +151,31 @@ def process_month(month_folder, processed_data_root: str = "Processed_Data"):
         ]
     )
 
-    total     = len(daily_folders)
+    # Keep only folders that carry a recognised rain-day suffix.
+    # Clear-sky folders are silently skipped; progress is based solely on
+    # the rainy subset so the counter reaches N/N correctly.
+    rainy_folders = [
+        folder
+        for folder in daily_folders
+        if _is_rainy_folder(folder.name)
+    ]
+
+    total     = len(rainy_folders)
     completed = []
     failed    = []
 
     # ── Initial render ────────────────────────────────────────────────────────
-    display = _render_display(month_name, daily_folders, completed, None, total)
+    display = _render_display(month_name, rainy_folders, completed, None, total)
     print(display)
     last_line_count = display.count("\n") + 1
 
-    for folder in daily_folders:
+    for folder in rainy_folders:
 
         day_label = _date_label(folder.name)
 
         # Re-render with ⏳ on the current day
         _clear_lines(last_line_count)
-        display = _render_display(month_name, daily_folders, completed, day_label, total)
+        display = _render_display(month_name, rainy_folders, completed, day_label, total)
         print(display)
         last_line_count = display.count("\n") + 1
 
@@ -167,7 +200,7 @@ def process_month(month_folder, processed_data_root: str = "Processed_Data"):
 
         # Re-render with ✓ on the completed day
         _clear_lines(last_line_count)
-        display = _render_display(month_name, daily_folders, completed, None, total)
+        display = _render_display(month_name, rainy_folders, completed, None, total)
         print(display)
         last_line_count = display.count("\n") + 1
 
