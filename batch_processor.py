@@ -212,7 +212,7 @@ def process_month(month_folder, processed_data_root: str = "Processed_Data"):
     print("  Processing Complete")
     print()
     print(f"  Month           : {month_name}")
-    print(f"  Files Processed : {total}")
+    print(f"  Rainy days : {total}")
     print(f"  Successful      : {len(completed)}")
     print(f"  Failed          : {len(failed)}")
     print()
