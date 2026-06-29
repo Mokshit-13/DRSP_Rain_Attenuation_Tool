@@ -65,7 +65,7 @@ def _is_rainy_folder(folder_name: str) -> bool:
     # Check for recognised rain suffixes anywhere in the folder name.
     # Use word-boundary logic: the suffix must appear as a distinct token
     # (preceded by a space) so that plain date strings are not mis-matched.
-    for suffix in ("VL-R", "L-R", " R"):
+    for suffix in ("VL-R", "L-R", " R", "-R"):
         if suffix in name_upper:
             return True
 
