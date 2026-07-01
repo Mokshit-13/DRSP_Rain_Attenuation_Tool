@@ -73,6 +73,47 @@ def _is_rainy_folder(folder_name: str) -> bool:
 
 
 
+def get_year(month_folder) -> str:
+    """
+    Determines the year from the selected month folder by walking up to
+    its parent (the year folder, e.g. "Raw_Data/2020/January_2020").
+
+    Returns the year as a string, e.g. "2020".
+    Falls back to extracting a 4-digit year from the month folder name
+    itself if no sensible parent folder name is found.
+    """
+    month_path  = Path(month_folder)
+    parent_name = month_path.parent.name
+
+    if parent_name.isdigit() and len(parent_name) == 4:
+        return parent_name
+
+    # Fallback: pull a 4-digit year out of the month folder name
+    m = re.search(r"(\d{4})", month_path.name)
+    if m:
+        return m.group(1)
+
+    return parent_name
+
+
+def create_output_directory(
+    processed_data_root: str,
+    year: str,
+    month_name: str,
+    day_folder_name: str,
+) -> Path:
+    """
+    Builds and creates (if needed) the nested output directory:
+        <processed_data_root>/<year>/<month_name>/<day_folder_name>/
+
+    Returns the resulting Path.
+    """
+    output_dir = Path(processed_data_root) / year / month_name / day_folder_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+
 def _render_display(
     month_name:    str,
     daily_folders: list,
@@ -129,19 +170,22 @@ def process_month(month_folder, processed_data_root: str = "Processed_Data"):
     ----------
     month_folder : str or Path
         Path to the month directory inside the raw data tree
-        (e.g. "Data_2022/January_2022").
+        (e.g. "Raw_Data/2020/January_2020").
     processed_data_root : str, optional
         Root directory for all generated output.  Defaults to
         "Processed_Data" (relative to the current working directory).
         The full output path for each day is:
-            <processed_data_root>/<month_name>/<DD-MM-YYYY>/
+            <processed_data_root>/<year>/<month_name>/<day_folder_name>/
+        The year is detected automatically from the parent of
+        month_folder, and both the year and month folders are created
+        automatically if they do not already exist.
     """
 
     month_path = Path(month_folder)
     month_name = month_path.name
 
-    # Root output directory for this month
-    processed_root = Path(processed_data_root)
+    # Year is detected automatically from the raw data folder structure
+    year = get_year(month_path)
 
     daily_folders = sorted(
         [
@@ -180,9 +224,10 @@ def process_month(month_folder, processed_data_root: str = "Processed_Data"):
         last_line_count = display.count("\n") + 1
 
         # ── Determine output directory for this day ───────────────────────────
-        # Structure: Processed_Data/<month_name>/<DD-MM-YYYY>/
-        output_dir = processed_root / month_name / day_label
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Structure: Processed_Data/<year>/<month_name>/<day_folder_name>/
+        output_dir = create_output_directory(
+            processed_data_root, year, month_name, folder.name
+        )
 
         # ── Process the day (silent) ──────────────────────────────────────────
         main_file = find_main_narl_file(folder)
@@ -211,6 +256,7 @@ def process_month(month_folder, processed_data_root: str = "Processed_Data"):
     print()
     print("  Processing Complete")
     print()
+    print(f"  Year            : {year}")
     print(f"  Month           : {month_name}")
     print(f"  Rainy days      : {total}")
     print(f"  Successful      : {len(completed)}")

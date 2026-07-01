@@ -41,7 +41,7 @@ from pathlib import Path
 # ==============================================================================
 
 Y_AXIS_MIN  = 0                             # Fixed Y-axis lower bound (dB)
-Y_AXIS_MAX  = 25                            # Fixed Y-axis upper bound (dB)
+Y_AXIS_MAX  = 25                            # Fallback upper bound (overridden by dynamic calc)
 TOP_PCT     = 0.05                          # Fraction used for reference level
 HOUR_TICKS  = [0, 3, 6, 9, 12, 15, 18, 21] # X-axis major tick positions (hrs)
 
@@ -73,11 +73,78 @@ def extract_date_from_filename(file_path: str) -> str:
     return date_str
 
 
+def clean_time_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Silently cleans the Time column before datetime conversion.
+
+    Steps
+    -----
+    1. Cast the column to string and strip leading/trailing whitespace.
+    2. Extract the first valid HH:MM:SS token from each value using a regex,
+       discarding any trailing characters (e.g. 's', 'sec', ' s', etc.).
+    3. Rows where no valid HH:MM:SS pattern can be found are left as NaN so
+       that dropna() in load_data() will discard them.
+
+    No messages are printed regardless of how many values are fixed.
+    """
+    time_str = df["Time"].astype(str).str.strip()
+
+    # Extract the first occurrence of HH:MM:SS (digits only, colon-separated)
+    extracted = time_str.str.extract(r"(\d{1,2}:\d{2}:\d{2})", expand=False)
+
+    df = df.copy()
+    df["Time"] = extracted
+    return df
+
+
+def clean_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Silently cleans every amplitude channel column before numeric conversion.
+
+    Steps
+    -----
+    1. Strip leading/trailing whitespace from string representations.
+    2. Convert to numeric, coercing unrecognised values to NaN.
+    3. Replace +inf and -inf with NaN so they are discarded by dropna().
+
+    Valid measurements are never modified.
+    No messages are printed.
+    """
+    df = df.copy()
+
+    for ch in CHANNELS:
+        col = df[ch].astype(str).str.strip()
+        df[ch] = pd.to_numeric(col, errors="coerce")
+        df[ch] = df[ch].replace([float("inf"), float("-inf")], float("nan"))
+
+    return df
+
+
+def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Applies all silent preprocessing steps to the raw NARL DataFrame.
+
+    Order
+    -----
+    1. clean_time_column  — normalise time strings, extract HH:MM:SS
+    2. clean_numeric_columns — normalise amplitude values, remove ±inf
+    3. Drop rows where Time or any amplitude column is NaN / unparseable
+
+    This function never interpolates, fills, or alters valid measurements.
+    No terminal output is produced.
+    """
+    df = clean_time_column(df)
+    df = clean_numeric_columns(df)
+    df = df.dropna(subset=["Time"] + CHANNELS)
+    return df
+
+
 def load_data(file_path: str, verbose: bool = True) -> pd.DataFrame:
     """
-    Reads the whitespace-delimited NARL data file and parses the Time column
-    into datetime objects so Matplotlib can format the X-axis correctly.
-    Returns a cleaned DataFrame with no NaN rows.
+    Reads the whitespace-delimited NARL data file, silently cleans common
+    formatting inconsistencies, parses the Time column into datetime objects
+    so Matplotlib can format the X-axis correctly, and returns a cleaned
+    DataFrame with no NaN rows.
     """
     df = pd.read_csv(file_path, sep=r"\s+", engine="python")
 
@@ -85,15 +152,72 @@ def load_data(file_path: str, verbose: bool = True) -> pd.DataFrame:
         print("\nColumns Found:")
         print(df.columns.tolist())
 
+    # ── Silent formatting cleanup ─────────────────────────────────────────────
+    # Handles trailing characters on timestamps ('s', 'sec', etc.) and
+    # +/-inf or whitespace-padded values in amplitude columns.
+    # Must happen BEFORE Time conversion and BEFORE duplicate averaging.
+    df = clean_dataframe(df)
+
     # Parse HH:MM:SS time strings into datetime (date portion is irrelevant)
     df["Time"] = pd.to_datetime(df["Time"], format="%H:%M:%S")
 
-    # Coerce amplitude columns to numeric; drop any rows that fail
-    for ch in CHANNELS:
-        df[ch] = pd.to_numeric(df[ch], errors="coerce")
-
+    # Amplitude columns are already numeric after clean_dataframe();
+    # a final dropna() guards against any residual edge-cases.
     df = df.dropna()
     return df
+
+
+# ==============================================================================
+# PREPROCESSING — TEMPORAL NORMALISATION
+# ==============================================================================
+
+def normalize_to_one_sample_per_second(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures the DataFrame contains exactly one row per unique second.
+
+    Datasets collected before 2020 may contain multiple amplitude readings
+    within the same second (sub-second sampling).  Everything downstream
+    (reference calculation, attenuation, plots, exports) assumes a 1 Hz
+    rate, so this function collapses any such duplicates before processing
+    continues.
+
+    Behaviour
+    ---------
+    • If every timestamp is already unique (standard 1 Hz data), the original
+      DataFrame is returned unchanged — no copies, no overhead.
+    • If duplicate timestamps exist, the four amplitude columns are averaged
+      independently for each second, and the resulting single-row-per-second
+      DataFrame is returned.  The Time column is preserved as-is; only the
+      Amp_Channel-N values are averaged.
+
+    No console output is produced regardless of which branch is taken.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The raw DataFrame produced by load_data(), with a parsed Time column
+        and numeric Amp_Channel-N columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Either the original df (if already 1 Hz) or a new DataFrame with
+        averaged amplitudes (one row per second).
+    """
+    if not df["Time"].duplicated().any():
+        # Every timestamp is unique — nothing to do
+        return df
+
+    # Average the four amplitude channels per second.
+    # groupby preserves the Time values exactly; only the amplitudes are
+    # collapsed.  reset_index() restores Time as a regular column.
+    df_averaged = (
+        df.groupby("Time", sort=True)[CHANNELS]
+        .mean()
+        .reset_index()
+    )
+
+    return df_averaged
 
 
 # ==============================================================================
@@ -412,19 +536,54 @@ def setup_hover_cursor(line_artists: list, channel_labels: list) -> None:
 
 
 # ==============================================================================
+# DYNAMIC Y-AXIS CALCULATION
+# ==============================================================================
+
+def calculate_dynamic_ymax(df: pd.DataFrame) -> float:
+    """
+    Determines the Y-axis upper limit for attenuation plots automatically.
+
+    Rules
+    -----
+    • Considers all four Att_Channel-N columns.
+    • Finds the single largest attenuation value across all channels.
+    • Rounds that value UP to the next multiple of 5 dB.
+    • Returns at least 5 dB even if the data maximum is zero or near-zero.
+
+    Examples
+    --------
+    max = 2.3  dB  →  5  dB
+    max = 7.8  dB  →  10 dB
+    max = 14.1 dB  →  15 dB
+    max = 23.8 dB  →  25 dB
+    max = 27.4 dB  →  30 dB
+    max = 82.2 dB  →  85 dB
+    """
+    att_cols = [ch.replace("Amp_", "Att_") for ch in CHANNELS]
+
+    global_max = df[att_cols].max().max()   # scalar: largest value across all channels
+
+    # Round up to the next multiple of 5; enforce minimum of 5 dB
+    import math
+    y_max = max(5, math.ceil(global_max / 5) * 5)
+
+    return float(y_max)
+
+
+# ==============================================================================
 # SUBPLOT FORMATTING
 # ==============================================================================
 
-def format_axes(ax, title: str, show_xlabel: bool) -> None:
+def format_axes(ax, title: str, show_xlabel: bool, y_max: float = Y_AXIS_MAX) -> None:
     """
     Applies consistent formatting to a single subplot axis:
       - Title, axis labels, grid
       - X-axis: HH:MM with 3-hour major ticks, 45° rotation
-      - Y-axis: fixed 0–25 dB range
+      - Y-axis: 0 dB to y_max (calculated dynamically from data)
     """
     ax.set_title(title, fontsize=11, fontweight="bold", pad=4)
     ax.set_ylabel("Attenuation (dB)", fontsize=9)
-    ax.set_ylim(Y_AXIS_MIN, Y_AXIS_MAX)
+    ax.set_ylim(Y_AXIS_MIN, y_max)
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
 
     if show_xlabel:
@@ -435,7 +594,6 @@ def format_axes(ax, title: str, show_xlabel: bool) -> None:
     ax.xaxis.set_major_locator(mdates.HourLocator(byhour=HOUR_TICKS))
     ax.tick_params(axis="x", rotation=45, labelsize=8)
     ax.tick_params(axis="y", labelsize=8)
-
 
 # ==============================================================================
 # MAIN PLOTTING FUNCTION
@@ -474,6 +632,9 @@ def plot_attenuation(
     att_cols     = [ch.replace("Amp_", "Att_") for ch in CHANNELS]
     chan_labels  = [f"CH{i}" for i in range(1, 5)]
 
+    # --- Dynamic Y-axis upper limit (shared across all four subplots) --------
+    y_max = calculate_dynamic_ymax(df)
+
     # --- Figure & axes -------------------------------------------------------
     fig, ax_grid = plt.subplots(
         2, 2,
@@ -505,7 +666,7 @@ def plot_attenuation(
         )
         line_artists.append(line)
 
-        format_axes(ax, label, show_xlabel)
+        format_axes(ax, label, show_xlabel, y_max=y_max)
 
     # --- Overall figure title ------------------------------------------------
     # y=0.98 keeps the title fully inside the figure canvas so it is never
@@ -610,6 +771,9 @@ def process_file(
     df = load_data(file_path, verbose=verbose)
     if verbose:
         print(f"Rows loaded (after NaN drop) : {len(df):,}")
+
+    # ── Temporal normalisation — collapses sub-second duplicates to 1 Hz ─────
+    df = normalize_to_one_sample_per_second(df)
 
     # ── Reference levels ─────────────────────────────────────────────────────
     references = compute_references(df, verbose=verbose)
