@@ -133,9 +133,46 @@ def scan_day(day_folder) -> dict:
     return result
 
 
+def _progress_bar(current: int, total: int, width: int = 28) -> str:
+    """Returns a filled/empty progress bar string."""
+    filled = int(width * current / total) if total > 0 else 0
+    bar    = "█" * filled + "-" * (width - filled)
+    pct    = int(100 * current / total) if total > 0 else 0
+    return f"[{bar}] {current}/{total} ({pct}%)"
+
+
+def _clear_lines(n: int) -> None:
+    """Moves the cursor up n lines and clears each one."""
+    for _ in range(n):
+        print("\033[A\033[2K", end="")
+
+
+def _render_dashboard(month_name: str, current: int, total: int, current_folder: str) -> str:
+    """Builds the in-place dashboard block."""
+    lines = [
+        "=" * 57,
+        "INF Value Validator",
+        "=" * 57,
+        "",
+        "Scanning Month",
+        "",
+        f"  {month_name}",
+        "",
+        "Progress",
+        "",
+        f"  {_progress_bar(current, total)}",
+        "",
+        f"  \u23f3 {current_folder}",
+        "",
+        "=" * 57,
+    ]
+    return "\n".join(lines)
+
+
 def scan_month(month_folder: str) -> tuple:
     """
     Scans EVERY daily subfolder inside the month folder (rainy and clear-sky).
+    Displays an in-place progress dashboard while scanning.
 
     Returns
     -------
@@ -151,9 +188,25 @@ def scan_month(month_folder: str) -> tuple:
         if folder.is_dir()
     )
 
+    total = len(daily_folders)
     daily_results = []
-    for folder in daily_folders:
+
+    display = _render_dashboard(month_name, 0, total, "")
+    print(display)
+    last_line_count = display.count("\n") + 1
+
+    for i, folder in enumerate(daily_folders, start=1):
+        _clear_lines(last_line_count)
+        display = _render_dashboard(month_name, i - 1, total, folder.name)
+        print(display)
+        last_line_count = display.count("\n") + 1
+
         daily_results.append(scan_day(folder))
+
+    # Final render showing 100 %
+    _clear_lines(last_line_count)
+    display = _render_dashboard(month_name, total, total, "Done")
+    print(display)
 
     return daily_results, month_name
 
