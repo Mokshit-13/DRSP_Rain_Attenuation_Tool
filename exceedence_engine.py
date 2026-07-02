@@ -9,6 +9,10 @@ from tkinter import filedialog
 
 from tabulate import tabulate
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.utils import get_column_letter
+
 
 # ==============================================================================
 # CONFIGURATION
@@ -17,7 +21,7 @@ from tabulate import tabulate
 TARGET_CHANNEL = "Att_Channel-3"   # Only this channel is analyzed
 
 LOWER_LIMIT = 1.00                 # Lowest threshold (dB)
-UPPER_LIMIT = 50.00                # Highest threshold (dB)
+UPPER_LIMIT = 58.00                # Highest threshold (dB)
 STEP_SIZE   = 0.10                 # Threshold step size (dB)
 
 MONTH_ORDER = [
@@ -269,6 +273,27 @@ def print_table(headers, rows):
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
 
+def _thin_border() -> Border:
+    """Returns a Border object with thin lines on all four sides."""
+    side = Side(style="thin")
+    return Border(left=side, right=side, top=side, bottom=side)
+
+
+def _apply_header_style(cell) -> None:
+    """Applies bold, centred, light-blue header formatting with a thin border."""
+    cell.font      = Font(name="Arial", bold=True, size=10)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.fill      = PatternFill("solid", start_color="BDD7EE")
+    cell.border    = _thin_border()
+
+
+def _apply_data_style(cell) -> None:
+    """Applies centred Arial formatting with a thin border to a data cell."""
+    cell.font      = Font(name="Arial", size=10)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border    = _thin_border()
+
+
 def save_report(
     year: str,
     headers,
@@ -276,36 +301,82 @@ def save_report(
     output_root: str = "Processed_Data",
 ) -> Path:
     """
-    Writes the exceedance report (title, year, generation date,
-    configuration, and the complete table) to a txt file inside
-    <output_root>/Exceedance_Tables/Exceedance_Table_<year>.txt
+    Writes the exceedance report as a professionally formatted Excel workbook
+    (.xlsx) inside <output_root>/Exceedance_Tables/Exceedance_Table_<year>.xlsx
 
-    Creates the Exceedance_Tables folder automatically if it does not
-    already exist.  Returns the full Path of the saved report.
+    Worksheet: Monthly Exceedance
+    Columns  : Lower Limit (dB) | Upper Limit (dB) | <months...> | Total Seconds
+    Formatting:
+        • Bold, centre-aligned, light-blue header row
+        • Thin borders on every cell
+        • Numeric cells stored as numbers (not strings)
+        • Auto-adjusted column widths
+        • First row frozen
+
+    Creates the Exceedance_Tables folder automatically if it does not exist.
+    Returns the full Path of the saved workbook.
     """
     output_dir = Path(output_root) / "Exceedance_Tables"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    report_path = output_dir / f"Exceedance_Table_{year}.txt"
+    report_path = output_dir / f"Exceedance_Table_{year}.xlsx"
 
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Monthly Exceedance"
 
-    with open(report_path, "w", newline="") as f:
-        f.write("=" * 70 + "\n")
-        f.write("DRSP Rain Attenuation Tool — Monthly Exceedance Statistics\n")
-        f.write("=" * 70 + "\n")
-        f.write(f"Year             : {year}\n")
-        f.write(f"Date Generated   : {generated_at}\n")
-        f.write("\n")
-        f.write("Configuration\n")
-        f.write(f"  Lower Limit    : {LOWER_LIMIT:.2f}\n")
-        f.write(f"  Upper Limit    : {UPPER_LIMIT:.2f}\n")
-        f.write(f"  Step Size      : {STEP_SIZE:.2f}\n")
-        f.write(f"  Channel        : {TARGET_CHANNEL}\n")
-        f.write("\n")
-        f.write(tabulate(rows, headers=headers, tablefmt="grid"))
-        f.write("\n")
+    # ── Build column headers ──────────────────────────────────────────────────
+    # Replace plain "Lower Limit" / "Upper Limit" labels with labelled versions
+    excel_headers = []
+    for h in headers:
+        if h == "Lower Limit":
+            excel_headers.append("Lower Limit (dB)")
+        elif h == "Upper Limit":
+            excel_headers.append("Upper Limit (dB)")
+        else:
+            excel_headers.append(h)
 
+    # Write header row
+    for col_idx, label in enumerate(excel_headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=label)
+        _apply_header_style(cell)
+
+    # Freeze the header row
+    ws.freeze_panes = "A2"
+
+    # ── Write data rows ───────────────────────────────────────────────────────
+    for row_idx, row_data in enumerate(rows, start=2):
+        for col_idx, value in enumerate(row_data, start=1):
+            # Convert threshold strings ("1.00", "1.10" …) to float;
+            # leave month counts and Total Seconds as int.
+            if col_idx <= 2:                        # Lower / Upper Limit columns
+                cell_value = float(value)
+            elif col_idx == len(row_data):          # Total Seconds (last column)
+                cell_value = int(value)
+            else:                                   # Monthly counts
+                cell_value = int(value)
+
+            cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
+            _apply_data_style(cell)
+
+            # Format threshold columns to 2 decimal places
+            if col_idx <= 2:
+                cell.number_format = "0.00"
+
+    # ── Auto-adjust column widths ─────────────────────────────────────────────
+    for col_idx, header_label in enumerate(excel_headers, start=1):
+        col_letter = get_column_letter(col_idx)
+
+        # Measure the widest content in this column
+        max_width = len(header_label)
+        for row_idx in range(2, len(rows) + 2):
+            cell_val = ws.cell(row=row_idx, column=col_idx).value
+            if cell_val is not None:
+                max_width = max(max_width, len(str(cell_val)))
+
+        ws.column_dimensions[col_letter].width = max_width + 4   # padding
+
+    wb.save(report_path)
     return report_path
 
 
