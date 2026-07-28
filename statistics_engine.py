@@ -1,6 +1,7 @@
 from pathlib import Path
 import csv
 import math
+import re
 import sys
 import tkinter as tk
 from tkinter import filedialog
@@ -12,8 +13,8 @@ from tabulate import tabulate
 # CONFIGURATION
 # ==============================================================================
 
-TARGET_CHANNEL      = "Att_Channel-3"    # Only this channel is analyzed
-TOP_N               = 3                  # Number of top values to report per month
+TARGET_CHANNEL      = "Att_Channel-1"    # Only this channel is analyzed
+TOP_N               = 3                 # Number of top values to report per month
 
 
 # ==============================================================================
@@ -23,14 +24,14 @@ TOP_N               = 3                  # Number of top values to report per mo
 def select_processed_data_folder() -> str:
     """
     Opens a Windows folder selection dialog and returns the path chosen by
-    the user.  If the user cancels or closes the dialog, prints a message
-    and exits the program.
+    the user (expected to be a Processed_Data/<year> folder).  If the user
+    cancels or closes the dialog, prints a message and exits the program.
     """
     root = tk.Tk()
     root.withdraw()                         # hide the empty root window
 
     folder_path = filedialog.askdirectory(
-        title="Select Processed_Data Folder",
+        title="Select Year Folder",
     )
 
     root.destroy()
@@ -74,16 +75,29 @@ def find_months(root: str):
     )
 
 
+# Matches both legacy (Attenuation_NAR_D_M_YYYY.txt) and current
+# (Attenuation_NARL_D_M_YYYY.txt) processed filenames — the "L?" makes the
+# "L" optional so a single pattern covers both dataset generations.
+ATTENUATION_FILENAME_PATTERN = re.compile(
+    r"^Attenuation_NARL?_\d{1,2}_\d{1,2}_\d{4}\.txt$"
+)
+
+
 def find_attenuation_files(month_folder):
     """
-    Recursively finds every Attenuation_NARL_*.txt file inside a month
-    folder (one level down, inside each day folder).
+    Recursively finds every processed attenuation file inside a month
+    folder (one level down, inside each day folder), matching both the
+    legacy naming convention (Attenuation_NAR_D_M_YYYY.txt) and the
+    current naming convention (Attenuation_NARL_D_M_YYYY.txt).
 
     Returns a sorted list of file Paths.
     """
     month_path = Path(month_folder)
 
-    return sorted(month_path.rglob("Attenuation_NARL_*.txt"))
+    return sorted(
+        f for f in month_path.rglob("*.txt")
+        if ATTENUATION_FILENAME_PATTERN.match(f.name)
+    )
 
 
 # ==============================================================================
@@ -194,7 +208,17 @@ def print_month_report(month_name: str, top_values: list):
 # MAIN
 # ==============================================================================
 
+def _print_title() -> None:
+    """Displays the engine's own title banner at startup."""
+    width = 57
+    print("=" * width)
+    print("STATISTICS ENGINE".center(width))
+    print("=" * width)
+
+
 def main():
+    _print_title()
+
     processed_data_root = select_processed_data_folder()
 
     month_folders = scan_processed_data(processed_data_root)
